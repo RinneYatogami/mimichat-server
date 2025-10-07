@@ -91,6 +91,14 @@ app.post("/api/mimichat", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8787;
+app.get("/diag", (_, res) => {
+  res.json({
+    provider: PROVIDER,
+    model: MODEL,
+    hasKey: Boolean(apiKey)
+  });
+});
+
 app.listen(PORT, () => {
   console.log("MimiChat DeepSeek server on", PORT, "model:", MODEL);
 });
