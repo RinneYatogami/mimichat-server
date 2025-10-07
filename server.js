@@ -149,7 +149,7 @@ app.post("/api/mimichat", async (req, res) => {
     const callOnce = () =>
       client.chat.completions.create({
         model: MODEL,
-        temperature: 0.7,
+        temperature: 0.3,
         top_p: 0.95,
         max_tokens: 220,
         messages,
