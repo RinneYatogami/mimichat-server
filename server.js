@@ -1,4 +1,4 @@
-// server.js — MimiChat + Groq only
+// server.js — MimiChat (Aromi) + Groq only
 import express from "express";
 import cors from "cors";
 import OpenAI from "openai";
@@ -6,24 +6,28 @@ import "dotenv/config";
 
 const app = express();
 
-/* ---------- CORS: nhớ thêm domain thật của bạn ---------- */
+/* ===================== CORS ===================== */
 const ALLOWED_ORIGINS = [
   "https://animekpdtshop.com",
   "https://www.animekpdtshop.com",
-  "http://localhost:3000"        // để test local
+  "http://localhost:3000",            // test local
 ];
+
 const corsOptions = {
   origin: (origin, cb) => {
-    if (!origin) return cb(null, true);                 // cho tool/curl
+    // Cho phép tool/curl (không gửi Origin)
+    if (!origin) return cb(null, true);
     if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error("Not allowed by CORS"));
-  }
+  },
+  credentials: false,
 };
+
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(express.json({ limit: "1mb" }));
 
-/* ---------- Aromi prompt (giống bản bạn thích) ---------- */
+/* ===================== Aromi prompt ===================== */
 const sys = `
 Bạn là **Aromi** – học sinh trợ lý ảo lấy cảm hứng từ Blue Archive, hỗ trợ mua hàng/đặt trước cho **Sensei** (người dùng) trên shop Anime-KPDT.
 
@@ -35,40 +39,46 @@ Bạn là **Aromi** – học sinh trợ lý ảo lấy cảm hứng từ Blue A
 - Thích hợp mở đầu “Vâng ạ!”, “Em hiểu rồi ạ~”; luôn đề xuất bước tiếp theo (chọn mẫu/size/tầm giá…).
 `;
 
-/* ---------- Groq (OpenAI-compatible) ---------- */
+/* ===================== Groq (OpenAI-compatible) ===================== */
 const client = new OpenAI({
-  apiKey: process.env.GROQ_API_KEY,                 // gsk_...
-  baseURL: "https://api.groq.com/openai/v1"
+  apiKey: process.env.GROQ_API_KEY,                // gsk_xxx
+  baseURL: "https://api.groq.com/openai/v1",
 });
 
-// Model khuyến nghị (bạn có thể đổi trong ENV): 
-// llama3-8b-8192 (ổn định) hoặc llama-3.1-8b-instant (nếu tài khoản có).
-const MODEL = process.env.GROQ_MODEL || "llama3-8b-8192";
+// Model gợi ý, KHÔNG dùng bản đã bị deprecate:
+// - llama-3.1-8b-instant (nhẹ, rẻ, phản hồi tốt)
+// - có thể set trong ENV: GROQ_MODEL
+const MODEL = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
 
-/* ---------- Utils ---------- */
+/* ===================== Utils ===================== */
 function toOpenAIMessages(history = []) {
-  return history.slice(-12).map(m => ({
+  return history.slice(-12).map((m) => ({
     role: m.role === "me" ? "user" : "assistant",
-    content: m.text
+    content: m.text,
   }));
 }
 
-const friendlyFallback = "Máy chủ bận một lát, Sensei thử lại giúp em nhé.";
+const friendlyFallback =
+  "Vâng ạ! Em đang ở đây—Sensei muốn hỏi gì về sản phẩm hay đặt trước ạ?";
 
-/* ---------- Routes ---------- */
+/* ===================== Routes ===================== */
 app.get("/", (_, res) => {
-  res.type("text/plain").send(`MimiChat + Groq is running. Model=${MODEL}. Try /health or POST /api/mimichat`);
+  res
+    .type("text/plain")
+    .send(`MimiChat + Groq is running. Model=${MODEL}. Try /health or POST /api/mimichat`);
 });
+
 app.get("/health", (_, res) => res.json({ ok: true }));
+
 app.get("/diag", (_, res) => {
   res.json({
     provider: "groq",
     model: MODEL,
-    hasKey: Boolean(process.env.GROQ_API_KEY)
+    hasKey: Boolean(process.env.GROQ_API_KEY),
   });
 });
 
-/* ---------- Chat endpoint ---------- */
+/* ===================== Chat endpoint ===================== */
 app.post("/api/mimichat", async (req, res) => {
   try {
     const { msg, level, history } = req.body || {};
@@ -79,38 +89,48 @@ app.post("/api/mimichat", async (req, res) => {
     const messages = [
       { role: "system", content: sys },
       ...toOpenAIMessages(history),
-      { role: "user", content: `Level hiện tại: ${level}. Tin nhắn mới: ${msg}` }
+      {
+        role: "user",
+        content: `Level hiện tại: ${level}. Tin nhắn mới: ${msg}`,
+      },
     ];
 
-    // 1 lần retry nhẹ nếu bị 429
-    const call = async () => client.chat.completions.create({
-      model: MODEL,
-      temperature: 0.7,
-      messages
-    });
+    const callOnce = () =>
+      client.chat.completions.create({
+        model: MODEL,
+        temperature: 0.7,
+        top_p: 0.95,
+        max_tokens: 220,           // đảm bảo luôn có nội dung trả lời
+        messages,
+      });
 
     let completion;
     try {
-      completion = await call();
+      completion = await callOnce();
     } catch (e) {
-      if (e.status === 429) {
-        await new Promise(r => setTimeout(r, 800));
-        completion = await call();
+      // Retry nhẹ nếu 429
+      if (e?.status === 429) {
+        await new Promise((r) => setTimeout(r, 800));
+        completion = await callOnce();
       } else {
         throw e;
       }
     }
 
-    const text = completion.choices?.[0]?.message?.content?.trim() || friendlyFallback;
-    res.json({ reply: text });
+    const choice = completion?.choices?.[0];
+    let text = (choice?.message?.content || "").trim();
+
+    if (!text) text = friendlyFallback;
+
+    return res.json({ reply: text });
   } catch (err) {
-    console.error("Groq error:", err.status || err.code || "", err.message || err);
-    res.status(200).json({ reply: friendlyFallback });
+    console.error("Groq error:", err?.status || err?.code || "", err?.message || err);
+    return res.status(200).json({ reply: friendlyFallback });
   }
 });
 
-/* ---------- Start ---------- */
-const PORT = process.env.PORT || 8787;  // Render sẽ đặt PORT động
+/* ===================== Start ===================== */
+const PORT = process.env.PORT || 8787;
 app.listen(PORT, () => {
   console.log(`MimiChat Groq server on ${PORT}, model=${MODEL}`);
 });
